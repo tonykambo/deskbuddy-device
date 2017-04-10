@@ -14,6 +14,7 @@ extern "C" {
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include <ArduinoJson.h>
 #include <PubSubClient.h> // https://github.com/knolleary/pubsubclient/releases/tag/v2.3
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -36,6 +37,7 @@ bool isEnvironmentTimerComplete = false;
 os_timer_t trayTiltTimer;
 bool isTrayTiltTimerComplete = false;
 
+const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 
 // State Machine variables
 
@@ -69,7 +71,8 @@ const char* password = WIFI_PASSWORD;
 
 char server[] = IOT_ORG IOT_BASE_URL;
 char topic[] = "iot-2/evt/status/fmt/json";
-char debugTopic[] = "iot-2/evt/status/fmt/debug";
+char tempTopic[] = "iot-2/evt/temp/fmt/json";
+char debugTopic[] = "iot-2/evt/debug/fmt/json";
 char authMethod[] = "use-token-auth";
 char token[] = IOT_TOKEN;
 char clientId[] = "d:" IOT_ORG ":" IOT_DEVICE_TYPE ":" IOT_DEVICE_ID;
@@ -334,6 +337,8 @@ void setup() {
   init_wifi();
   connectWithBroker();
 
+
+
   // Start the DHT22
   publishDebug("WiFi On");
   publishDebug("Initialising Sensors");
@@ -388,6 +393,7 @@ void loop() {
   //   state = IDLE;
   // }
   ArduinoOTA.handle();
+  client.loop();
 }
 
 // Timer Call Backs
@@ -435,40 +441,43 @@ void connectWithBroker() {
       lcd.print(".");
       delay(500);
     }
+
+    client.subscribe("iot-2/cmd/indicator/fmt/json");
+
     Serial.println();
   }
 }
 
 void publishPayload() {
 
-  // String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"counter\":";
-  //
-  // payload += counter;
-  // payload += ",\"volts\":";
-  // payload += volts;
-  // payload += ",\"temperature\":";
-  // payload += t;
-  // payload += ",\"humidity\":";
-  // payload += h;
-  // payload += ",\"heatIndex\":";
-  // payload += hic;
-  // payload += "}}";
-  //
-  // Serial.print("Sending payload: ");
-  // Serial.println(payload);
-  //
-  // if (client.publish(topic, (char*) payload.c_str())) {
-  //   Serial.println("Publish ok");
-  // } else {
-  //   Serial.print("Publish failed with error:");
-  //   Serial.println(client.state());
-  // }
+  String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"counter\":";
+
+  payload += counter;
+  payload += ",\"volts\":";
+  payload += volts;
+  payload += ",\"temperature\":";
+  payload += t;
+  payload += ",\"humidity\":";
+  payload += h;
+  payload += ",\"heatIndex\":";
+  payload += hic;
+  payload += "}}";
+
+  Serial.print("Sending payload: ");
+  Serial.println(payload);
+
+  if (client.publish(tempTopic, (char*) payload.c_str())) {
+    Serial.println("Publish ok");
+  } else {
+    Serial.print("Publish failed with error:");
+    Serial.println(client.state());
+  }
 }
 
 void publishDebug(String debugMessage) {
   String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"message\":";
 
-  payload += "\""+debugMessage+"\"}";
+  payload += "\""+debugMessage+"\"}}";
 
   if (client.publish(debugTopic, (char *) payload.c_str())) {
     Serial.println("Published debug OK");
@@ -513,8 +522,44 @@ void debugDisplayPayload() {
   Serial.println(" *C ");
 }
 
+void processJson(char * message) {
+  StaticJsonBuffer<BUFFER_SIZE> jsonBuffer;
+
+  JsonObject& root = jsonBuffer.parseObject(message);
+
+  if (root.containsKey("status")) {
+    if (strcmp(root["status"], "away") == 0) {
+      lcd.setCursor(0,2);
+      lcd.print("away");
+    } else {
+      lcd.setCursor(0,2);
+      lcd.print("here");
+    }
+  }
+
+}
+
 void callback(char* topic, byte* payload, unsigned int length) {
  Serial.println("callback invoked");
+ char message_buff[length+1];
+ strncpy(message_buff,(char *)payload, length);
+ message_buff[length] = '\0';
+ String topicString = String(topic);
+ String payloadString = String(message_buff);
+
+ processJson(message_buff);
+
+ String callBackDetails = "callback received on topic ["+topicString+"] with payload ["+payloadString+"]";
+
+
+ //sprintf(callBackDetails,"callback received on topic %s with payload",topic);
+ publishDebug("topic="+topicString);
+ publishDebug("payload="+payloadString);
+ //publishDebug(callBackDetails);
+
+
+ lcd.setCursor(0,3);
+ lcd.print(payloadString);
 }
 
 void lcdClearLine() {
