@@ -58,7 +58,14 @@ const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 //   MIDDLE
 // };
 
+// enum OwnerStatus {
+//   IN,
+//   OUT
+// }
+
 //SystemState state = IDLE;
+
+//OwnerStatus onwerStatus = WILL_BE_AWAY;
 
 //MotorPosition currentMotorPosition = MIDDLE;
 
@@ -102,6 +109,9 @@ DHT dht(DHTPIN, DHTTYPE);
 // #define MOTOR_SWITCH_LEFT 0
 // #define MOTOR_SWITCH_RIGHT 1
 // int motorSwitchDetected = 0;
+
+#define OWNER_STATUS_IN 5
+#define OWNER_STATUS_OUT 0
 
 // Timer Trigger Switches
 
@@ -332,6 +342,10 @@ void setup() {
   Serial.begin(115200);
   Serial.println();
 
+  pinMode(OWNER_STATUS_IN, OUTPUT);
+  pinMode(OWNER_STATUS_OUT, OUTPUT);
+  digitalWrite(OWNER_STATUS_IN, 0); // switch off
+  digitalWrite(OWNER_STATUS_OUT, 0); // switch off
   init_lcd();
   lcdStatus("Initialisaing");
   init_wifi();
@@ -531,9 +545,15 @@ void processJson(char * message) {
     if (strcmp(root["status"], "away") == 0) {
       lcd.setCursor(0,2);
       lcd.print("away");
+      digitalWrite(OWNER_STATUS_IN, 0); // switch off
+      digitalWrite(OWNER_STATUS_OUT, 1);
+
     } else {
       lcd.setCursor(0,2);
       lcd.print("here");
+
+      digitalWrite(OWNER_STATUS_IN, 1); // switch off
+      digitalWrite(OWNER_STATUS_OUT, 0);
     }
   }
 
