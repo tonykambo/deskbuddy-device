@@ -110,9 +110,9 @@ DHT dht(DHTPIN, DHTTYPE);
 // #define MOTOR_SWITCH_RIGHT 1
 // int motorSwitchDetected = 0;
 
-#define OWNER_STATUS_IN 5
-#define OWNER_STATUS_OUT 0
-
+#define OWNER_STATUS_IN 5 // D1 = GPIO5
+#define OWNER_STATUS_OUT 0 // D3 = GPIO0
+#define OWNER_MESSAGE  12 // D6 = GPIO12
 // Timer Trigger Switches
 
 #define PORT_TIMER_SWITCH 15 // D8 = GPIO15
@@ -344,8 +344,10 @@ void setup() {
 
   pinMode(OWNER_STATUS_IN, OUTPUT);
   pinMode(OWNER_STATUS_OUT, OUTPUT);
+  pinMode(OWNER_MESSAGE, OUTPUT);
   digitalWrite(OWNER_STATUS_IN, 0); // switch off
   digitalWrite(OWNER_STATUS_OUT, 0); // switch off
+  digitalWrite(OWNER_MESSAGE, 0);
   init_lcd();
   lcdStatus("Initialisaing");
   init_wifi();
@@ -544,16 +546,26 @@ void processJson(char * message) {
   if (root.containsKey("status")) {
     if (strcmp(root["status"], "away") == 0) {
       lcd.setCursor(0,2);
-      lcd.print("away");
+      lcd.print("Tony will be in");
       digitalWrite(OWNER_STATUS_IN, 0); // switch off
       digitalWrite(OWNER_STATUS_OUT, 1);
+      digitalWrite(OWNER_MESSAGE, 0);
 
-    } else {
+    } else if (strcmp(root["status"],"here") == 0) {
       lcd.setCursor(0,2);
-      lcd.print("here");
+      lcd.print("You can use desk");
 
       digitalWrite(OWNER_STATUS_IN, 1); // switch off
       digitalWrite(OWNER_STATUS_OUT, 0);
+      digitalWrite(OWNER_MESSAGE, 0);
+    } else {
+      lcd.setCursor(0,2);
+      lcd.print("Important Message");
+
+      digitalWrite(OWNER_STATUS_IN, 0); // switch off
+      digitalWrite(OWNER_STATUS_OUT, 0);
+      digitalWrite(OWNER_MESSAGE, 1);
+
     }
   }
 
