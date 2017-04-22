@@ -212,7 +212,7 @@ void initEnvironmentTimer() {
 // }
 //
 void startEnvironmentTimer() {
-  os_timer_arm(&environmentTimer,10000, true);
+  os_timer_arm(&environmentTimer,3600000, true); // every hour
 }
 
 void stopEnvironmentTimer() {
@@ -374,6 +374,15 @@ void setup() {
 
   publishDebug("Setup complete");
   lcdStatus("Setup complete");
+
+  // perform initial climate read
+  
+  readDHTSensor();
+  //connectWithBroker();
+  debugDisplayPayload();
+  displayLCD();
+  publishPayload();
+
 //----------------- wifi_set_sleep_type(LIGHT_SLEEP_T);
 //----------------- gpio_pin_wakeup_enable(GPIO_ID_PIN(2),GPIO_PIN_INTR_HILEVEL);
 }
@@ -466,7 +475,10 @@ void connectWithBroker() {
 
 void publishPayload() {
 
+  String deviceId(IOT_DEVICE_ID);
+
   String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"counter\":";
+
 
   payload += counter;
   payload += ",\"volts\":";
@@ -477,6 +489,10 @@ void publishPayload() {
   payload += h;
   payload += ",\"heatIndex\":";
   payload += hic;
+  payload += ",\"deviceId\":";
+
+  //payload += ",\"deviceId\":\""+IOT_DEVICE_ID+"\"";
+  payload += "\""+deviceId+"\"";
   payload += "}}";
 
   Serial.print("Sending payload: ");
