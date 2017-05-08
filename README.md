@@ -1,13 +1,14 @@
 # DeskBuddy Device Controller
 
 
-### Register modified LCD library
+##Schematic
+The schematic was drawn using EasyEDA ([here](https://easyeda.com/tonykambo/Desk_Buddy_Controller-6655d3a9d81849328680a73bbaf47957)).
 
+![Schematic](EDA/deskbuddycontroller_schematic.png)
 
-https://raw.githubusercontent.com/tonykambo/LiquidCrystal_I2C/master/library.json
-
-
+##NodeMCU Code
 ### Add dependency directly to library
+The LiquidCrystal I2C library was modified to allow for specifying alternate PINs. 
 
 ```
 [env:nodemcuv2]
