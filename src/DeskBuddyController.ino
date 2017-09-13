@@ -10,6 +10,9 @@ extern "C" {
   #include "gpio.h"
 }
 
+//#define DEBUG_ESP_WIFI
+
+
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
@@ -21,65 +24,42 @@ extern "C" {
 #include "DHT.h"
 #include "SensitiveConfig.h"
 #include <Time.h>
+#include <SparkFun_APDS9960.h>
+
 
 void callback(char* topic, byte* payload, unsigned int length);
 
 // Configure 2 line LCD display with I2C interface
-
 //LiquidCrystal_I2C lcd(0x27,16,2);
 LiquidCrystal_I2C lcd(0x27,20,4);
 
-// Timers
+bool presenceStatus = false;
 
+// Timers
 os_timer_t environmentTimer;
 bool isEnvironmentTimerComplete = false;
 
 os_timer_t trayTiltTimer;
 bool isTrayTiltTimerComplete = false;
 
+os_timer_t lcdStatusMessageTimer;
+bool isLcdStatusMessageTimerComplete = false;
+
+
+// JSON buffer size
 const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 
-// State Machine variables
-
-// enum SystemState {
-//   IDLE,
-//   PUBLISHING_ENVIRONMENT_EVENT,
-//   TRAY_TILTING,
-//   TILTING_TRAY_LEFT,
-//   TILTING_TRAY_RIGHT,
-//   OTA_IN_PROGRESS,
-//   MOTOR_SWITCH_DETECTED,
-//   TIMER_SWITCH_ACTIVATED
-// };
-
-// enum MotorPosition {
-//   LEFT,
-//   RIGHT,
-//   MIDDLE
-// };
-
-// enum OwnerStatus {
-//   IN,
-//   OUT
-// }
-
-//SystemState state = IDLE;
-
-//OwnerStatus onwerStatus = WILL_BE_AWAY;
-
-//MotorPosition currentMotorPosition = MIDDLE;
 
 // WiFI credentials
-
 const char* ssid = WIFI_SSID;
-const char* password = WIFI_PASSWORD;
+//const char* password = WIFI_PASSWORD;
 
 // IBM Internet of Things MQTT configuration
-
 char server[] = IOT_ORG IOT_BASE_URL;
 char topic[] = "iot-2/evt/status/fmt/json";
 char tempTopic[] = "iot-2/evt/temp/fmt/json";
 char debugTopic[] = "iot-2/evt/debug/fmt/json";
+char motionDetectedTopic[] = "iot-2/evt/motion/fmt/json";
 char authMethod[] = "use-token-auth";
 char token[] = IOT_TOKEN;
 char clientId[] = "d:" IOT_ORG ":" IOT_DEVICE_TYPE ":" IOT_DEVICE_ID;
@@ -92,30 +72,25 @@ PubSubClient client(server, 1883, callback, wifiClient);
 uint16_t volts;
 
 // Temperature and Humidity Sensor (DHT22) Configuration
-
 #define DHTPIN D2
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
-// Motor
-
-#define DIRA 0 // D3 = GPIO0
-#define PWMA 5 // D1 = GPIO5
-
-// Switches
-
-// #define PORT_MOTOR_SWITCH_LEFT 13 // D7 = GPIO13
-// #define PORT_MOTOR_SWITCH_RIGHT 12 // D6 = GPIO12
-// #define MOTOR_SWITCH_LEFT 0
-// #define MOTOR_SWITCH_RIGHT 1
-// int motorSwitchDetected = 0;
-
+// PIN definitions
 #define OWNER_STATUS_IN 0 // D3 = GPIO0
 #define OWNER_STATUS_OUT 5 // D1 = GPIO5
 #define OWNER_MESSAGE  12 // D6 = GPIO12
+#define MOTIONSENSORPIN D7 // D7 = GPIO13
+
+// D0 = GPIO16
+// D8 = GPIO15 - Interrupt for Gesture Sensor
+// RST = Reset
+
 // Timer Trigger Switches
 
-#define PORT_TIMER_SWITCH 15 // D8 = GPIO15
+// State Variables
+bool motionSensorDetected;
+int motionSensorDetectedCount = 0;
 
 int counter = 0;
 float h; // humidity
@@ -123,10 +98,22 @@ float t; // temperature
 float hic; // heat index
 
 
+// DF Robot APDS9960 Gesture Sensor
+
+//#define APDS9960_INT D8 //GPIO15 - Interrupt pin
+#define APDS9960_INT 10 //GPIO10 - Interrupt pin
+#define APDS9960_SDA D4 //GPIO2
+#define APDS9960_SCL D5 //GPIO14
+
+int isr_flag = 0;
+
+
+SparkFun_APDS9960 apds = SparkFun_APDS9960();
+
 //*** Initialisation ********************************************
 
 void init_lcd() {
-  // SDA = 2 (GPIO4), SCL = 14 (GPIO5)
+  // SDA = D4 (GPIO2), SCL = D5 (GPIO14)
   lcd.init(2,14);
   lcd.backlight();
   lcd.clear();
@@ -134,6 +121,7 @@ void init_lcd() {
 }
 
 void configureOTA() {
+  Serial.println("Initialising OTA");
   // Port defaults to 8266
   // ArduinoOTA.setPort(8266);
 
@@ -171,46 +159,53 @@ void configureOTA() {
 }
 
 void init_wifi() {
+  lcdStatus("Connecting to WiFi");
   Serial.println("DeskBuddy Controller OTA v1");
   Serial.println("Initialising Wifi");
+
+  // change this back
+
   WiFi.mode(WIFI_STA);
   Serial.print("Connecting to ");
   Serial.println(ssid);
 
+  char wifiName[30];
+  sprintf(wifiName,"%s",ssid);
+  lcdStatus(wifiName);
 
   if (strcmp (WiFi.SSID().c_str(), ssid) != 0) {
-    WiFi.begin(ssid, password);
+    //WiFi.begin(ssid, password);
+    WiFi.begin(ssid);
   }
 
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    //Serial.print(WiFi.status());
+    //WiFi.printDiag(Serial);
+    delay(1000);
     Serial.print(".");
   }
   Serial.println("");
   Serial.print("WiFi connected with OTA4, IP address: ");
   Serial.println(WiFi.localIP());
-  publishDebug("WiFi Connected with OTA on IP: "+WiFi.localIP());
+  //publishDebug("WiFi Connected with OTA on IP: "+WiFi.localIP());
+  Serial.println("About to configure OTA");
+  lcdStatus("Starting OTA service");
   configureOTA();
+  Serial.println("Configured OTA");
+  Serial.println("Checking WiFi again");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
 }
 
-// void initMotorTimer() {
-//   // This timer is for tilting the tray (by activating the motor)
-//   os_timer_setfn(&trayTiltTimer, trayTiltTimerFinished, NULL);
-// }
 
 void initEnvironmentTimer() {
   // This timer is for taking temperature and humidity readings
   os_timer_setfn(&environmentTimer, environmentTimerFinished, NULL);
 }
 
-// void startMotorTimer() {
-//   os_timer_arm(&trayTiltTimer,30000, true);
-// }
-//
-// void stopMotorTimer() {
-//   os_timer_disarm(&trayTiltTimer);
-// }
-//
+
 void startEnvironmentTimer() {
   os_timer_arm(&environmentTimer,3600000, true); // every hour
 }
@@ -219,142 +214,97 @@ void stopEnvironmentTimer() {
   os_timer_disarm(&environmentTimer);
 }
 
-// void initSwitches() {
-//   // Configure the ports for reading the motor switches
-//   publishDebug("Configuring switch sensors");
-//   lcdStatus("Init switch sensors");
-//   pinMode(PORT_MOTOR_SWITCH_LEFT, INPUT_PULLUP);
-//   pinMode(PORT_MOTOR_SWITCH_RIGHT, INPUT_PULLUP);
-//   pinMode(BUILTIN_LED, OUTPUT);
-//   delay(500);
-// }
+void initLcdStatusMessageTimer() {
+  os_timer_setfn(&lcdStatusMessageTimer,lcdStatusTimerFinished, NULL);
+}
+
+void startLcdStatusMessageTimer() {
+  os_timer_disarm(&lcdStatusMessageTimer);
+  os_timer_arm(&lcdStatusMessageTimer,1000,true);
+}
+
+void stopLcdStatusMessageTimer() {
+  os_timer_disarm(&lcdStatusMessageTimer);
+}
 
 void lcdStatus(String message) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
+  lcd.setCursor(0, 3);
   lcd.print(message);
 }
 
-// void tiltMotor(MotorPosition targetPosition) {
-//   // set the direction of moving the motor
-//   if (targetPosition == LEFT) {
-//     digitalWrite(DIRA,1);
-//     publishDebug("Tilting motor LEFT");
-//     lcdStatus("Tilting LEFT");
-//   } else {
-//     digitalWrite(DIRA,0);
-//     publishDebug("Tilting motor RIGHT");
-//     lcdStatus("Tilting RIGHT");
-//   }
-//
-//   // start the motor moving
-//   analogWrite(PWMA,1000);
-//
-//   int motorSwitchLeft = digitalRead(PORT_MOTOR_SWITCH_LEFT);
-//   int motorSwitchRight = digitalRead(PORT_MOTOR_SWITCH_RIGHT);
-//
-//   // Continue looping until a switch is Activated
-//   // TODO: Add add a safety timer so if we don't detect a switch
-//   // within a certain time we switch off the motor
-//   // in case a switch is faulty
-//
-//   if (targetPosition == LEFT) {
-//     // only check for the left switch as the right switch would already
-//     // be active
-//     while (motorSwitchLeft != HIGH) {
-//       motorSwitchLeft = digitalRead(PORT_MOTOR_SWITCH_LEFT);
-//       delay(100);
-//     }
-//   } else {
-//     while (motorSwitchRight != HIGH) {
-//       motorSwitchRight = digitalRead(PORT_MOTOR_SWITCH_RIGHT);
-//       delay(100);
-//     }
-//   }
-//
-//   switchOffMotor();
-//   if (targetPosition == LEFT) {
-//     currentMotorPosition = LEFT;
-//     publishDebug("Tilt completed to Left");
-//   } else {
-//     currentMotorPosition = RIGHT;
-//     publishDebug("Tilt completed to right");
-//   }
-//   lcdStatus("Finished tilting");
-//
-// }
+void lcdStatusTimerFinished(void *pArg) {
+  isLcdStatusMessageTimerComplete = true;
+}
+// Configure DF Robot APDS9960 Gesture Sensors
+
+void configGestureSensor() {
+  Wire.begin(APDS9960_SDA, APDS9960_SCL);
+  pinMode(APDS9960_INT, INPUT);
+  attachInterrupt(APDS9960_INT, gestureInterrupt, FALLING);
+  if (apds.init()) {
+    lcdStatus("Init Gesture Sensor");
+  } else {
+    lcdStatus("Gesture Sensor Fail");
+  }
+
+  if (apds.enableGestureSensor(true)) {
+    lcdStatus("Gesture Sensor On");
+  } else {
+    lcdStatus("Gesture Sensor Bad");
+  }
+
+}
 
 
-// Estbalish a known position of the motor
-// If the neither switch is active set it to the default side
-// If a switch is active, leave it there
+String macToStr(const uint8_t* mac)
+{
+  String result;
 
-// void calibrateMotor() {
-//
-//   publishDebug("Calibrating motor");
-//   lcdStatus("Calibrating motor");
-//
-//   pinMode(DIRA, OUTPUT);
-//   pinMode(PWMA, OUTPUT);
-//
-//   // read Motor Switches
-//   int motorSwitchLeft = digitalRead(PORT_MOTOR_SWITCH_LEFT);
-//   int motorSwitchRight = digitalRead(PORT_MOTOR_SWITCH_RIGHT);
-//
-//   // TODO: Capture the state of the motor
-//   // so we know when to just stop and wait or
-//   // we're just taking off
-//
-//   if (motorSwitchLeft == HIGH) {
-//     // Make sure motor is off
-//     switchOffMotor();
-//     publishDebug("Motor Switch Left is HIGH");
-//     lcdStatus("Motor SW Left High");
-//     currentMotorPosition = LEFT;
-//     delay(100);
-//     return;
-//   }
-//   if (motorSwitchRight == HIGH) {
-//     switchOffMotor();
-//     publishDebug("Motor Switch Right is HIGH");
-//     lcdStatus("Motor SW Right High");
-//     currentMotorPosition = RIGHT;
-//     delay(100);
-//     return;
-//   }
-//
-//   // Neither switch is on
-//   switchOffMotor();
-//   publishDebug("Motor is in middle");
-//   lcdStatus("Motor in middle");
-//   currentMotorPosition = MIDDLE;
-//
-//   // Track motor to default position
-//   tiltMotor(LEFT);
-// }
+  for (int i = 0; i < 6; ++i) {
+    result += String(mac[i], 16);
+    if (i < 5)
+    result += ':';
+    }
+  return result;
+}
 
+void printMacAddress() {
+  String clientMac = "";
+  unsigned char mac[6];
+  WiFi.macAddress(mac);
+  clientMac += macToStr(mac);
+  Serial.print("Mac address is...");
+  Serial.println(clientMac);
+}
 // Initialisation
 
 void setup() {
 
-  // Configure serial port
+  // Confgure Gesture Sensor
+//  configGestureSensor();
 
+  // Configure serial port
   Serial.begin(115200);
   Serial.println();
 
   pinMode(OWNER_STATUS_IN, OUTPUT);
   pinMode(OWNER_STATUS_OUT, OUTPUT);
   pinMode(OWNER_MESSAGE, OUTPUT);
+
+  pinMode(MOTIONSENSORPIN, INPUT);
+
+  attachInterrupt(MOTIONSENSORPIN, motionSensorActivated, RISING);
+
   digitalWrite(OWNER_STATUS_IN, 0); // switch off
   digitalWrite(OWNER_STATUS_OUT, 0); // switch off
   digitalWrite(OWNER_MESSAGE, 0);
   init_lcd();
   lcdStatus("Initialising");
+  delay(2000);
+  printMacAddress();
   init_wifi();
   connectWithBroker();
-
-
-
+  lcdStatus("Initialising sensors");
   // Start the DHT22
   publishDebug("WiFi On");
   publishDebug("Initialising Sensors");
@@ -363,31 +313,31 @@ void setup() {
   Serial.print("Reading Analog...");
   Serial.println(analogRead(0));
 
-  //initSwitches();
-  //calibrateMotor();
-
-  // Start the timers
-  // initMotorTimer();
-  // startMotorTimer();
-   initEnvironmentTimer();
-   startEnvironmentTimer();
-
-  publishDebug("Setup complete");
-  lcdStatus("Setup complete");
+  initEnvironmentTimer();
+  startEnvironmentTimer();
 
   // perform initial climate read
-  
+
   readDHTSensor();
-  //connectWithBroker();
   debugDisplayPayload();
   displayLCD();
   publishPayload();
-
-//----------------- wifi_set_sleep_type(LIGHT_SLEEP_T);
-//----------------- gpio_pin_wakeup_enable(GPIO_ID_PIN(2),GPIO_PIN_INTR_HILEVEL);
+  publishDebug("Setup complete");
+  lcdStatus("Setup complete");
+  initLcdStatusMessageTimer();
 }
 
 // *************************************************************
+
+// Gesture Sensor Interrupt Routine
+
+static int motionCounter = 0;
+
+void gestureInterrupt() {
+  isr_flag = 1;
+}
+
+int motionSensor = 0;
 
 void loop() {
   if (isEnvironmentTimerComplete == true) {
@@ -402,21 +352,54 @@ void loop() {
     displayLCD();
     publishPayload();
   }
-  //
-  // if (isTrayTiltTimerComplete == true) {
-  //   // change the tilt of the tray
-  //
-  //   isTrayTiltTimerComplete = false;
-  //   stopMotorTimer();
-  //   state = TRAY_TILTING;
-  //   if (currentMotorPosition == LEFT) {
-  //     tiltMotor(RIGHT);
-  //   } else {
-  //     tiltMotor(LEFT);
-  //   }
-  //   startMotorTimer();
-  //   state = IDLE;
-  // }
+
+  if (isLcdStatusMessageTimerComplete == true) {
+    isLcdStatusMessageTimerComplete = false;
+    stopLcdStatusMessageTimer();
+    displayLCD();
+  }
+
+  if (motionSensorDetected == true) {
+    motionSensorDetected = false;
+    motionCounter++;
+
+    Serial.println("Motion Detected");
+
+    publishMotionDetected();
+    // lcdStatus("Motion Detected "+String(motionCounter));
+    //
+    // startLcdStatusMessageTimer();
+  }
+
+  if (isr_flag == 1) {
+    detachInterrupt(APDS9960_INT);
+    handleGesture();
+    if (digitalRead(APDS9960_INT) == 0) {
+      apds.init();
+      apds.enableGestureSensor(true);
+    }
+    isr_flag = 0;
+    attachInterrupt(APDS9960_INT, gestureInterrupt, FALLING);
+  }
+
+if (WiFi.status() != WL_CONNECTED) {
+  lcdStatus("Reconnecting to WiFi");
+  WiFi.begin(ssid);
+  while (WiFi.status() != WL_CONNECTED) {
+    //Serial.print(WiFi.status());
+    //WiFi.printDiag(Serial);
+    delay(1000);
+    Serial.print(".");
+  }
+  displayLCD();
+}
+
+if (!!!client.connected()) {
+  lcdStatus("Reconnecting to Broker");
+  connectWithBroker();
+  displayLCD();
+}
+
   ArduinoOTA.handle();
   client.loop();
 }
@@ -429,10 +412,46 @@ void environmentTimerFinished(void *pArg) {
   isEnvironmentTimerComplete = true;
 }
 
-// void trayTiltTimerFinished(void *pArg) {
-//   isTrayTiltTimerComplete = true;
-// }
+
 // ************************************************************************
+
+
+void handleGesture() {
+  if (apds.isGestureAvailable()) {
+    switch (apds.readGesture()) {
+      case DIR_UP:
+        lcdStatus("Gesture UP");
+        publishDebug("Gesture UP");
+        break;
+      case DIR_DOWN:
+        lcdStatus("Gesture DOWN");
+        publishDebug("Gesture DOWN");
+        break;
+      case DIR_LEFT:
+        lcdStatus("Gesture LEFT");
+        publishDebug("Gesture LEFT");
+        break;
+      case DIR_RIGHT:
+        lcdStatus("Gesture RIGHT");
+        publishDebug("Gesture RIGHT");
+        break;
+      case DIR_NEAR:
+        lcdStatus("Gesture NEAR");
+        publishDebug("Gesture NEAR");
+        break;
+      case DIR_FAR:
+        lcdStatus("Gesture FAR");
+        publishDebug("Gesture FAR");
+        break;
+      default:
+        lcdStatus("Gesture unknown");
+        publishDebug("Gesture "+String(apds.readGesture()));
+    }
+    startLcdStatusMessageTimer();
+  }
+
+
+}
 
 void readDHTSensor() {
    // reading DHT22
@@ -452,6 +471,44 @@ void readDHTSensor() {
 
 void connectWithBroker() {
 
+  Serial.println("Calling HTTP first");
+  WiFiClient httpClient;
+
+  const int httpPort = 80;
+  const char* host = "deskbuddy.mybluemix.net";
+  String url = "/climate";
+  if (!httpClient.connect(host, httpPort)) {
+    Serial.println("connection failed for HTTP");
+  }
+
+  httpClient.print(String("GET ") + url+ " HTTP/1.1\r\n" +
+        "Host: " + host + "\r\n" +
+        "Connection: close\r\n\r\n");
+  unsigned long timeout = millis();
+  while (httpClient.available() == 0) {
+  if (millis() - timeout > 5000) {
+    Serial.println(">>> Client Timeout !");
+    httpClient.stop();
+    return;
+    }
+  }
+
+  while(httpClient.available()){
+      String line = httpClient.readStringUntil('\r');
+      Serial.print(line);
+  }
+
+
+
+
+  // now do fake login to IBM Guest WiFI
+
+  // const char* guestUserId = "dbuddy01"
+  // const char* guestPassword = "v58ety89"
+
+
+
+
   if (!!!client.connected()) {
     lcd.clear();
     lcd.setCursor(0,0);
@@ -460,7 +517,17 @@ void connectWithBroker() {
     Serial.println(server);
     lcd.setCursor(0,1);
     int cursorPosition = 0;
+
+    char connectionStateString[20];
+    int connectionState;
+
+    Serial.println("Delaying for 10 seconds before trying to connect with Broker");
+    delay(10000);
     while (!!!client.connect(clientId, authMethod, token)) {
+
+      connectionState = client.state();
+      sprintf(connectionStateString,"state=%d",connectionState);
+      Serial.println(connectionStateString);
       Serial.print(".");
       lcd.setCursor(cursorPosition++,1);
       lcd.print(".");
@@ -506,7 +573,25 @@ void publishPayload() {
   }
 }
 
+void publishMotionDetected() {
+  Serial.println("Publishing motion detected message");
+  String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"message\":";
+
+  String motionDetectedMessage = "MotionDetected";
+
+  payload += "\""+motionDetectedMessage+"\"}}";
+
+  if (client.publish(motionDetectedTopic, (char *) payload.c_str())) {
+    Serial.println("Published motion detected OK");
+  } else {
+    Serial.print("Publish motion detected failed with error:");
+    Serial.println(client.state());
+  }
+
+}
+
 void publishDebug(String debugMessage) {
+  Serial.println("Publishing debug message");
   String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"message\":";
 
   payload += "\""+debugMessage+"\"}}";
@@ -540,6 +625,28 @@ void displayLCD() {
   lcd.print(firstLine);
   lcd.setCursor(0,1);
   lcd.print(secondLine);
+  updateStatus();
+}
+
+void updateStatus() {
+  if (presenceStatus == true) {
+    lcd.setCursor(0,2);
+    lcd.print("                    ");
+    lcd.setCursor(0,2);
+    lcd.print("Tony is in today");
+    digitalWrite(OWNER_STATUS_IN, 1); // switch off
+    digitalWrite(OWNER_STATUS_OUT, 0);
+    digitalWrite(OWNER_MESSAGE, 0);
+  } else {
+    lcd.setCursor(0,2);
+    lcd.print("                    ");
+    lcd.setCursor(0,2);
+    lcd.print("Tony is away today");
+
+    digitalWrite(OWNER_STATUS_IN, 0); // switch off
+    digitalWrite(OWNER_STATUS_OUT, 1);
+    digitalWrite(OWNER_MESSAGE, 0);
+  }
 }
 
 void debugDisplayPayload() {
@@ -561,20 +668,28 @@ void processJson(char * message) {
 
   if (root.containsKey("status")) {
     if (strcmp(root["status"], "here") == 0) {
+      presenceStatus = true;
       lcd.setCursor(0,2);
-      lcd.print("Tony will be in");
+      lcd.print("                    ");
+      lcd.setCursor(0,2);
+      lcd.print("Tony is in today");
       digitalWrite(OWNER_STATUS_IN, 1); // switch off
       digitalWrite(OWNER_STATUS_OUT, 0);
       digitalWrite(OWNER_MESSAGE, 0);
 
     } else if (strcmp(root["status"],"away") == 0) {
+      presenceStatus = false;
       lcd.setCursor(0,2);
-      lcd.print("You can use desk");
+      lcd.print("                    ");
+      lcd.setCursor(0,2);
+      lcd.print("Tony is away today");
 
       digitalWrite(OWNER_STATUS_IN, 0); // switch off
       digitalWrite(OWNER_STATUS_OUT, 1);
       digitalWrite(OWNER_MESSAGE, 0);
     } else {
+      lcd.setCursor(0,2);
+      lcd.print("                    ");
       lcd.setCursor(0,2);
       lcd.print("Important Message");
 
@@ -586,6 +701,11 @@ void processJson(char * message) {
   }
 
 }
+void motionSensorActivated() {
+  motionSensorDetected = true;
+  motionSensorDetectedCount += 1;
+}
+
 
 void callback(char* topic, byte* payload, unsigned int length) {
  Serial.println("callback invoked");
@@ -613,51 +733,3 @@ void callback(char* topic, byte* payload, unsigned int length) {
 void lcdClearLine() {
   lcd.print("                ");
 }
-// Motor control
-
-// void switchOffMotor() {
-//   analogWrite(PWMA,0);
-//   publishDebug("Switching off motor");
-//   lcdStatus("Motor off");
-// }
-
-// Sensors
-
-// void motorSwitchLeftActivated() {
-//   state = MOTOR_SWITCH_DETECTED;
-//   motorSwitchDetected = MOTOR_SWITCH_LEFT;
-// }
-//
-// void motorSwitchRightActivated() {
-//   state = MOTOR_SWITCH_DETECTED;
-//   motorSwitchDetected = MOTOR_SWITCH_RIGHT;
-// }
-//
-// void motorSwitchAction() {
-//   state = PUBLISHING_ENVIRONMENT_EVENT;
-//   switchOffMotor();
-//   if (motorSwitchDetected == MOTOR_SWITCH_LEFT) {
-//     lcdStatus("Switch Left");
-//     publishDebug("Left Motor Switch Detected");
-//   } else {
-//     lcdStatus("Switch Right");
-//     publishDebug("Right Motor Switch Detected");
-//   }
-//   digitalWrite(BUILTIN_LED, LOW);
-//   delay(100);
-//   state = IDLE;
-// }
-
-// External switch trigger - TBD
-
-// void timerSwitchActivated() {
-//   state = TIMER_SWITCH_ACTIVATED;
-// }
-
-// void timerSwitchAction() {
-//   state = IDLE;
-//   publishDebug("Timer Switch Activated");
-//   lcdStatus("Timer Switch On");
-//   digitalWrite(BUILTIN_LED, LOW);
-//   initTimers();
-// }

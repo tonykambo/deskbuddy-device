@@ -4,3 +4,4 @@
 .gcc-flags.json
 SensitiveConfig.h
 *.sch.lck
+*.orig
