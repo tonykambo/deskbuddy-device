@@ -52,7 +52,7 @@ const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 
 // WiFI credentials
 const char* ssid = WIFI_SSID;
-//const char* password = WIFI_PASSWORD;
+const char* password = WIFI_PASSWORD;
 
 // IBM Internet of Things MQTT configuration
 char server[] = IOT_ORG IOT_BASE_URL;
@@ -60,6 +60,7 @@ char topic[] = "iot-2/evt/status/fmt/json";
 char tempTopic[] = "iot-2/evt/temp/fmt/json";
 char debugTopic[] = "iot-2/evt/debug/fmt/json";
 char motionDetectedTopic[] = "iot-2/evt/motion/fmt/json";
+char requestStatusTopic[] = "iot-2/evt/requestStatus/fmt/json";
 char authMethod[] = "use-token-auth";
 char token[] = IOT_TOKEN;
 char clientId[] = "d:" IOT_ORG ":" IOT_DEVICE_TYPE ":" IOT_DEVICE_ID;
@@ -174,8 +175,8 @@ void init_wifi() {
   lcdStatus(wifiName);
 
   if (strcmp (WiFi.SSID().c_str(), ssid) != 0) {
-    //WiFi.begin(ssid, password);
-    WiFi.begin(ssid);
+    WiFi.begin(ssid, password);
+    //WiFi.begin(ssid);
   }
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -325,6 +326,10 @@ void setup() {
   publishDebug("Setup complete");
   lcdStatus("Setup complete");
   initLcdStatusMessageTimer();
+
+  // Check for the last status from the server
+
+  requestStatus();
 }
 
 // *************************************************************
@@ -340,6 +345,9 @@ void gestureInterrupt() {
 int motionSensor = 0;
 
 void loop() {
+
+  // Check if the environment timer has completed. If it has then
+  // display the climate data on the LCD
   if (isEnvironmentTimerComplete == true) {
     isEnvironmentTimerComplete = false;
 
@@ -359,6 +367,7 @@ void loop() {
     displayLCD();
   }
 
+  // Check if the motion sensor has been activated
   if (motionSensorDetected == true) {
     motionSensorDetected = false;
     motionCounter++;
@@ -366,10 +375,9 @@ void loop() {
     Serial.println("Motion Detected");
 
     publishMotionDetected();
-    // lcdStatus("Motion Detected "+String(motionCounter));
-    //
-    // startLcdStatusMessageTimer();
   }
+
+  // check if the gesture sensor interrupt has fired
 
   if (isr_flag == 1) {
     detachInterrupt(APDS9960_INT);
@@ -382,25 +390,28 @@ void loop() {
     attachInterrupt(APDS9960_INT, gestureInterrupt, FALLING);
   }
 
-if (WiFi.status() != WL_CONNECTED) {
-  lcdStatus("Reconnecting to WiFi");
-  WiFi.begin(ssid);
-  while (WiFi.status() != WL_CONNECTED) {
-    //Serial.print(WiFi.status());
-    //WiFi.printDiag(Serial);
-    delay(1000);
-    Serial.print(".");
+  // Check if the WiFI is still connected
+  if (WiFi.status() != WL_CONNECTED) {
+    lcdStatus("Reconnecting to WiFi");
+    WiFi.begin(ssid);
+    while (WiFi.status() != WL_CONNECTED) {
+      //Serial.print(WiFi.status());
+      //WiFi.printDiag(Serial);
+      delay(1000);
+      Serial.print(".");
+    }
+    displayLCD();
   }
-  displayLCD();
-}
 
-if (!!!client.connected()) {
-  lcdStatus("Reconnecting to Broker");
-  connectWithBroker();
-  displayLCD();
-}
-
+  // Check if we're still connected to the MQTT Broker
+  if (!!!client.connected()) {
+    lcdStatus("Reconnecting to Broker");
+    connectWithBroker();
+    displayLCD();
+  }
+  // Process Over The Air updates
   ArduinoOTA.handle();
+  // Process MQTT messages from pubsub
   client.loop();
 }
 
@@ -498,17 +509,6 @@ void connectWithBroker() {
       Serial.print(line);
   }
 
-
-
-
-  // now do fake login to IBM Guest WiFI
-
-  // const char* guestUserId = "dbuddy01"
-  // const char* guestPassword = "v58ety89"
-
-
-
-
   if (!!!client.connected()) {
     lcd.clear();
     lcd.setCursor(0,0);
@@ -535,6 +535,7 @@ void connectWithBroker() {
     }
 
     client.subscribe("iot-2/cmd/indicator/fmt/json");
+    client.subscribe("iot-2/cmd/joke/fmt/json");
 
     Serial.println();
   }
@@ -600,6 +601,23 @@ void publishDebug(String debugMessage) {
     Serial.println("Published debug OK");
   } else {
     Serial.print("Publish failed with error:");
+    Serial.println(client.state());
+  }
+}
+
+
+// Request the status of the device from the server
+// This is called during setup
+
+void requestStatus() {
+  Serial.println("Requesting status from server");
+
+  String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"request\":\"status\"}}";
+
+  if (client.publish(requestStatusTopic, (char *)payload.c_str())) {
+    Serial.println("Status requested");
+  } else {
+    Serial.print("Request for status failed with error:");
     Serial.println(client.state());
   }
 }
@@ -698,9 +716,58 @@ void processJson(char * message) {
       digitalWrite(OWNER_MESSAGE, 1);
 
     }
+  } else if (root.containsKey("joke")) {
+
+    // TODO:  start a timer to display the joke for a brief amount of time and then
+    // return to the main display
+
+    digitalWrite(OWNER_STATUS_IN, 0); // switch off
+    digitalWrite(OWNER_STATUS_OUT, 0);
+    digitalWrite(OWNER_MESSAGE, 1);
+
+    String joke = root["joke"];
+    displayJoke(joke);
   }
 
 }
+
+// Thanks to macgruber for this code
+// http://forum.arduino.cc/index.php?topic=14140.0
+
+void stringToLCD(String stringIn) {
+   int lineCount = 0;
+   int lineNumber = 0;
+   byte stillProcessing = 1;
+   byte charCount = 1;
+   lcd.clear();
+   lcd.setCursor(0,0);
+
+   while(stillProcessing) {
+        if (++lineCount > 20) {    // have we printed 20 characters yet (+1 for the logic)
+             lineNumber += 1;
+             lcd.setCursor(0,lineNumber);   // move cursor down
+             lineCount = 1;
+        }
+
+        lcd.print(stringIn[charCount - 1]);
+
+        if (!stringIn[charCount]) {   // no more chars to process?
+             stillProcessing = 0;
+        }
+        charCount += 1;
+   }
+}
+
+
+void displayJoke(String jokeText) {
+  lcd.clear();
+  lcd.setCursor(0,0);
+  stringToLCD(jokeText);
+  //lcd.print("Chuck Norris an stop time for up to two hours by thinking about pineapples");
+  //lcd.print(jokeText);
+  Serial.println("Printing joke="+jokeText);
+}
+
 void motionSensorActivated() {
   motionSensorDetected = true;
   motionSensorDetectedCount += 1;
@@ -719,15 +786,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
  String callBackDetails = "callback received on topic ["+topicString+"] with payload ["+payloadString+"]";
 
-
- //sprintf(callBackDetails,"callback received on topic %s with payload",topic);
+ Serial.println(callBackDetails);
  publishDebug("topic="+topicString);
  publishDebug("payload="+payloadString);
  //publishDebug(callBackDetails);
-
-
- lcd.setCursor(0,3);
- lcd.print(payloadString);
+ //
+ // lcd.setCursor(0,3);
+ // lcd.print(payloadString);
 }
 
 void lcdClearLine() {
