@@ -45,6 +45,11 @@ bool isTrayTiltTimerComplete = false;
 os_timer_t lcdStatusMessageTimer;
 bool isLcdStatusMessageTimerComplete = false;
 
+os_timer_t jokeDisplayTimer;
+bool isJokeDisplayTimerComplete = false;
+
+os_timer_t jokeRequestTimer;
+bool isJokeRequestTimerComplete = false;
 
 // JSON buffer size
 const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
@@ -61,6 +66,7 @@ char tempTopic[] = "iot-2/evt/temp/fmt/json";
 char debugTopic[] = "iot-2/evt/debug/fmt/json";
 char motionDetectedTopic[] = "iot-2/evt/motion/fmt/json";
 char requestStatusTopic[] = "iot-2/evt/requestStatus/fmt/json";
+char requestJokeTopic[] = "iot-2/evt/requestJoke/fmt/json";
 char authMethod[] = "use-token-auth";
 char token[] = IOT_TOKEN;
 char clientId[] = "d:" IOT_ORG ":" IOT_DEVICE_TYPE ":" IOT_DEVICE_ID;
@@ -201,11 +207,12 @@ void init_wifi() {
 }
 
 
+// Initialise timers
+
 void initEnvironmentTimer() {
   // This timer is for taking temperature and humidity readings
   os_timer_setfn(&environmentTimer, environmentTimerFinished, NULL);
 }
-
 
 void startEnvironmentTimer() {
   os_timer_arm(&environmentTimer,3600000, true); // every hour
@@ -228,14 +235,54 @@ void stopLcdStatusMessageTimer() {
   os_timer_disarm(&lcdStatusMessageTimer);
 }
 
+void lcdStatusTimerFinished(void *pArg) {
+  isLcdStatusMessageTimerComplete = true;
+}
+
+// Displays a joke on the LCD during AWAY status for a brief moment
+
+void initJokesDisplayTimer() {
+  os_timer_setfn(&jokeDisplayTimer, jokesDisplayTimerFinished, NULL);
+}
+
+void startJokesDisplayTimer() {
+  os_timer_arm(&jokeDisplayTimer, 30000, true);
+}
+
+void stopJokesDisplayTimer() {
+  os_timer_disarm(&jokeDisplayTimer);
+}
+
+void jokesDisplayTimerFinished(void *pArg) {
+  isJokeDisplayTimerComplete = true;
+}
+
+
+// Request a joke on the LCD in AWAY status every so often
+
+void initJokeRequestTimer() {
+  os_timer_setfn(&jokeRequestTimer, jokeRequestTimerFinished, NULL);
+}
+
+void startJokeRequestTimer() {
+  os_timer_arm(&jokeRequestTimer, 120000, true);
+}
+
+void stopJokeRequestTimer() {
+  os_timer_disarm(&jokeRequestTimer);
+}
+
+void jokeRequestTimerFinished(void *pArg) {
+  isJokeRequestTimerComplete = true;
+}
+
+
 void lcdStatus(String message) {
   lcd.setCursor(0, 3);
   lcd.print(message);
 }
 
-void lcdStatusTimerFinished(void *pArg) {
-  isLcdStatusMessageTimerComplete = true;
-}
+
 // Configure DF Robot APDS9960 Gesture Sensors
 
 void configGestureSensor() {
@@ -326,6 +373,8 @@ void setup() {
   publishDebug("Setup complete");
   lcdStatus("Setup complete");
   initLcdStatusMessageTimer();
+  initJokeRequestTimer();
+  initJokesDisplayTimer();
 
   // Check for the last status from the server
 
@@ -365,6 +414,33 @@ void loop() {
     isLcdStatusMessageTimerComplete = false;
     stopLcdStatusMessageTimer();
     displayLCD();
+  }
+
+  if (isJokeDisplayTimerComplete == true) {
+    isJokeDisplayTimerComplete = false;
+    stopJokesDisplayTimer();
+
+    if (presenceStatus == true) {
+      digitalWrite(OWNER_STATUS_IN, 1); // switch off
+      digitalWrite(OWNER_STATUS_OUT, 0);
+      digitalWrite(OWNER_MESSAGE, 0);
+    } else {
+      digitalWrite(OWNER_STATUS_IN, 0); // switch off
+      digitalWrite(OWNER_STATUS_OUT, 1);
+      digitalWrite(OWNER_MESSAGE, 0);
+    }
+    displayLCD();
+  }
+
+  // if joke request timer is complete then
+  // request a new joke
+
+  if (isJokeRequestTimerComplete == true) {
+    isJokeRequestTimerComplete = false;
+
+    // request another joke
+    requestJoke();
+
   }
 
   // Check if the motion sensor has been activated
@@ -622,6 +698,20 @@ void requestStatus() {
   }
 }
 
+void requestJoke() {
+  Serial.println("Requesting joke from server");
+
+  String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"request\":\"joke\"}}";
+
+  if (client.publish(requestJokeTopic, (char *)payload.c_str())) {
+    Serial.println("Joke requested");
+  } else {
+    Serial.print("Request for joke failed with error:");
+    Serial.println(client.state());
+  }
+}
+
+
 void displayLCD() {
 
   static char tempStr[15];
@@ -695,6 +785,8 @@ void processJson(char * message) {
       digitalWrite(OWNER_STATUS_OUT, 0);
       digitalWrite(OWNER_MESSAGE, 0);
 
+      stopJokeRequestTimer();
+
     } else if (strcmp(root["status"],"away") == 0) {
       presenceStatus = false;
       lcd.setCursor(0,2);
@@ -705,6 +797,12 @@ void processJson(char * message) {
       digitalWrite(OWNER_STATUS_IN, 0); // switch off
       digitalWrite(OWNER_STATUS_OUT, 1);
       digitalWrite(OWNER_MESSAGE, 0);
+
+      // Start the Joke timer to display jokes
+
+      startJokeRequestTimer();
+      requestJoke();
+
     } else {
       lcd.setCursor(0,2);
       lcd.print("                    ");
@@ -727,6 +825,7 @@ void processJson(char * message) {
 
     String joke = root["joke"];
     displayJoke(joke);
+    startJokesDisplayTimer();
   }
 
 }
@@ -763,8 +862,6 @@ void displayJoke(String jokeText) {
   lcd.clear();
   lcd.setCursor(0,0);
   stringToLCD(jokeText);
-  //lcd.print("Chuck Norris an stop time for up to two hours by thinking about pineapples");
-  //lcd.print(jokeText);
   Serial.println("Printing joke="+jokeText);
 }
 
