@@ -39,6 +39,9 @@ bool presenceStatus = false;
 os_timer_t environmentTimer;
 bool isEnvironmentTimerComplete = false;
 
+os_timer_t displayEnvironmentTimer;
+bool isDisplayEnvironmentTimerComplete = false;
+
 os_timer_t trayTiltTimer;
 bool isTrayTiltTimerComplete = false;
 
@@ -104,6 +107,12 @@ float h; // humidity
 float t; // temperature
 float hic; // heat index
 
+float outsideTemp = 0;
+float outsideHumid = 0;
+
+// Travel time from work to home
+
+int travelTime = 0;
 
 // DF Robot APDS9960 Gesture Sensor
 
@@ -221,6 +230,23 @@ void startEnvironmentTimer() {
 void stopEnvironmentTimer() {
   os_timer_disarm(&environmentTimer);
 }
+
+// only displays local environment
+
+void initDisplayEnvironmentTimer() {
+  // This timer is for taking temperature and humidity readings
+  os_timer_setfn(&displayEnvironmentTimer, displayEnvironmentTimerFinished, NULL);
+}
+
+void startDisplayEnvironmentTimer() {
+  os_timer_arm(&displayEnvironmentTimer,60000, true); // every 60 seconds
+}
+
+void stopDisplayEnvironmentTimer() {
+  os_timer_disarm(&displayEnvironmentTimer);
+}
+
+
 
 void initLcdStatusMessageTimer() {
   os_timer_setfn(&lcdStatusMessageTimer,lcdStatusTimerFinished, NULL);
@@ -363,6 +389,8 @@ void setup() {
 
   initEnvironmentTimer();
   startEnvironmentTimer();
+  initDisplayEnvironmentTimer();
+  startDisplayEnvironmentTimer();
 
   // perform initial climate read
 
@@ -371,7 +399,7 @@ void setup() {
   displayLCD();
   publishPayload();
   publishDebug("Setup complete");
-  lcdStatus("Setup complete");
+  //lcdStatus("Setup complete");
   initLcdStatusMessageTimer();
   initJokeRequestTimer();
   initJokesDisplayTimer();
@@ -394,6 +422,17 @@ void gestureInterrupt() {
 int motionSensor = 0;
 
 void loop() {
+
+  if (isDisplayEnvironmentTimerComplete == true) {
+    isDisplayEnvironmentTimerComplete = false;
+
+    Serial.println("Display Environment timer completed");
+    publishDebug("Display Environment timer completed");
+    readDHTSensor();
+    debugDisplayPayload();
+    displayLCD();
+  }
+
 
   // Check if the environment timer has completed. If it has then
   // display the climate data on the LCD
@@ -499,6 +538,10 @@ void environmentTimerFinished(void *pArg) {
   isEnvironmentTimerComplete = true;
 }
 
+void displayEnvironmentTimerFinished(void *pArg) {
+
+  isDisplayEnvironmentTimerComplete = true;
+}
 
 // ************************************************************************
 
@@ -558,32 +601,32 @@ void readDHTSensor() {
 
 void connectWithBroker() {
 
-  Serial.println("Calling HTTP first");
-  WiFiClient httpClient;
-
-  const int httpPort = 80;
-  const char* host = "deskbuddy.mybluemix.net";
-  String url = "/climate";
-  if (!httpClient.connect(host, httpPort)) {
-    Serial.println("connection failed for HTTP");
-  }
-
-  httpClient.print(String("GET ") + url+ " HTTP/1.1\r\n" +
-        "Host: " + host + "\r\n" +
-        "Connection: close\r\n\r\n");
-  unsigned long timeout = millis();
-  while (httpClient.available() == 0) {
-  if (millis() - timeout > 5000) {
-    Serial.println(">>> Client Timeout !");
-    httpClient.stop();
-    return;
-    }
-  }
-
-  while(httpClient.available()){
-      String line = httpClient.readStringUntil('\r');
-      Serial.print(line);
-  }
+  //Serial.println("Calling HTTP first");
+  // WiFiClient httpClient;
+  //
+  // const int httpPort = 80;
+  // const char* host = "deskbuddy.mybluemix.net";
+  // String url = "/climate";
+  // if (!httpClient.connect(host, httpPort)) {
+  //   Serial.println("connection failed for HTTP");
+  // }
+  //
+  // httpClient.print(String("GET ") + url+ " HTTP/1.1\r\n" +
+  //       "Host: " + host + "\r\n" +
+  //       "Connection: close\r\n\r\n");
+  // unsigned long timeout = millis();
+  // while (httpClient.available() == 0) {
+  // if (millis() - timeout > 5000) {
+  //   Serial.println(">>> Client Timeout !");
+  //   httpClient.stop();
+  //   return;
+  //   }
+  // }
+  //
+  // while(httpClient.available()){
+  //     String line = httpClient.readStringUntil('\r');
+  //     Serial.print(line);
+  // }
 
   if (!!!client.connected()) {
     lcd.clear();
@@ -612,6 +655,8 @@ void connectWithBroker() {
 
     client.subscribe("iot-2/cmd/indicator/fmt/json");
     client.subscribe("iot-2/cmd/joke/fmt/json");
+    client.subscribe("iot-2/cmd/travelTime/fmt/json");
+    client.subscribe("iot-2/cmd/outsideClimate/fmt/json");
 
     Serial.println();
   }
@@ -668,11 +713,12 @@ void publishMotionDetected() {
 }
 
 void publishDebug(String debugMessage) {
-  Serial.println("Publishing debug message");
+  Serial.println("Publishing debug message="+debugMessage);
   String payload = "{\"d\":{\"myName\":\"ESP8266.Test1\",\"message\":";
 
   payload += "\""+debugMessage+"\"}}";
 
+  Serial.println("debugMessage payload = "+payload);
   if (client.publish(debugTopic, (char *) payload.c_str())) {
     Serial.println("Published debug OK");
   } else {
@@ -714,41 +760,94 @@ void requestJoke() {
 
 void displayLCD() {
 
-  static char tempStr[15];
-  static char humidStr[15];
-  static char hicStr[15];
+  static char insideTempStr[15];
+  static char insideHumidStr[15];
 
-  char firstLine[20];
-  char secondLine[20];
+  static char outsideTempStr[15];
+  static char outsideHumidStr[15];
 
-  dtostrf(t,2,1,tempStr);
-  dtostrf(h,2,1,humidStr);
-  dtostrf(hic,2,1,hicStr);
+  //static char hicStr[15];
+  static char travelTimeStr[15];
 
-  sprintf(firstLine,"Temp:%sC Hum:%s%",tempStr,humidStr);
-  sprintf(secondLine,"HI:%sC C:%d",hicStr,counter);
+  //char firstLine[20];
+  //char secondLine[20];
+  //char thirdLine[20];
 
-  lcd.clear();
+  dtostrf(t,2,1,insideTempStr);
+  dtostrf(h,2,1,insideHumidStr);
+
+  dtostrf(outsideTemp,2,1,outsideTempStr);
+  dtostrf(outsideHumid,2,1,outsideHumidStr);
+  //dtostrf(hic,2,1,hicStr);
+
+  Serial.println("displayLCD:t="+String(t));
+  Serial.println("displayLCD:h="+String(h));
+  Serial.println("displayLCD:insideTempStr="+String(insideTempStr));
+  Serial.println("displayLCD:insideHumidStr="+String(insideHumidStr));
+  String firstLine = "Inside: "+String(insideTempStr)+"C "+String(insideHumidStr)+"%";
+  String secondLine = "Outside: "+String(outsideTempStr)+"C "+String(outsideHumidStr)+"%";
+  String thirdLine = "Travel Time: "+String(travelTime)+" mins";
+
+  //sprintf(firstLine,"Inside: %sC %s%",insideTempStr,insideHumidStr);
+  //sprintf(secondLine,"Outside: %sC %s%",outsideTempStr,outsideHumidStr);
+  //sprintf(thirdLine,"Travel Time: %d mins",travelTime);
+  //sprintf(secondLine,"HI:%sC C:%d",hicStr,counter);
+
+  //lcd.clear();
+  Serial.println("displayLCD:firstLine="+String(firstLine));
+  lcd.setCursor(0,0);
+  lcd.print("                    ");
   lcd.setCursor(0,0);
   lcd.print(firstLine);
   lcd.setCursor(0,1);
+  lcd.print("                    ");
+  lcd.setCursor(0,1);
   lcd.print(secondLine);
+
+  // if I'm at work, show me my travel time to home
+
+
+  publishDebug("Checking precenceStatus");
+
+  if (presenceStatus == true) {
+    publishDebug("presenceStatus = true");
+  } else {
+    publishDebug("presenceStatus = false");
+  }
+
+
+  if (presenceStatus == true) {
+    lcd.setCursor(0,2);
+    lcd.print("                    ");
+    lcd.setCursor(0,2);
+    lcd.print(thirdLine);
+
+    String precenceString;
+
+    //sprintf(precenceString,"Setting precenceString=%s",thirdLine);
+
+    publishDebug("presenceStatus==true");
+  } else {
+    lcd.setCursor(0,2);
+    lcd.print("                    ");
+  }
+
   updateStatus();
 }
 
 void updateStatus() {
   if (presenceStatus == true) {
-    lcd.setCursor(0,2);
+    lcd.setCursor(0,3);
     lcd.print("                    ");
-    lcd.setCursor(0,2);
+    lcd.setCursor(0,3);
     lcd.print("Tony is in today");
     digitalWrite(OWNER_STATUS_IN, 1); // switch off
     digitalWrite(OWNER_STATUS_OUT, 0);
     digitalWrite(OWNER_MESSAGE, 0);
   } else {
-    lcd.setCursor(0,2);
+    lcd.setCursor(0,3);
     lcd.print("                    ");
-    lcd.setCursor(0,2);
+    lcd.setCursor(0,3);
     lcd.print("Tony is away today");
 
     digitalWrite(OWNER_STATUS_IN, 0); // switch off
@@ -774,12 +873,17 @@ void processJson(char * message) {
 
   JsonObject& root = jsonBuffer.parseObject(message);
 
+  publishDebug("processing Json");
+  publishDebug("processing raw message="+String(message));
+
   if (root.containsKey("status")) {
     if (strcmp(root["status"], "here") == 0) {
+      publishDebug("setting presenceStatus to true");
       presenceStatus = true;
-      lcd.setCursor(0,2);
+      //displayLCD();
+      lcd.setCursor(0,3);
       lcd.print("                    ");
-      lcd.setCursor(0,2);
+      lcd.setCursor(0,3);
       lcd.print("Tony is in today");
       digitalWrite(OWNER_STATUS_IN, 1); // switch off
       digitalWrite(OWNER_STATUS_OUT, 0);
@@ -788,10 +892,12 @@ void processJson(char * message) {
       stopJokeRequestTimer();
 
     } else if (strcmp(root["status"],"away") == 0) {
+      publishDebug("setting presenceStatus to false");
       presenceStatus = false;
-      lcd.setCursor(0,2);
+      //displayLCD();
+      lcd.setCursor(0,3);
       lcd.print("                    ");
-      lcd.setCursor(0,2);
+      lcd.setCursor(0,3);
       lcd.print("Tony is away today");
 
       digitalWrite(OWNER_STATUS_IN, 0); // switch off
@@ -804,9 +910,9 @@ void processJson(char * message) {
       requestJoke();
 
     } else {
-      lcd.setCursor(0,2);
+      lcd.setCursor(0,3);
       lcd.print("                    ");
-      lcd.setCursor(0,2);
+      lcd.setCursor(0,3);
       lcd.print("Important Message");
 
       digitalWrite(OWNER_STATUS_IN, 0); // switch off
@@ -826,6 +932,29 @@ void processJson(char * message) {
     String joke = root["joke"];
     displayJoke(joke);
     startJokesDisplayTimer();
+  } else if (root.containsKey("travelTime")) {
+    // TODO: Display travel time to Host
+    publishDebug("Received travelTime");
+
+    //update travelTime
+
+    travelTime = root["travelTime"];
+    displayLCD();
+
+  } else if (root.containsKey("outsideClimate")) {
+
+    // TODO: read outside climate
+
+    publishDebug("Received outsideClimate data");
+    outsideTemp = root["outsideClimate"]["outsideTemp"];
+    outsideHumid = root["outsideClimate"]["outsideHumid"];
+
+    String outsideTempString = "Outside Temp String="+String(outsideTemp)+"C";
+    String outsideHumidString = "Outside Humid String="+String(outsideHumid)+"%";
+    Serial.println("Received outside climate with "+outsideTempString+" and "+outsideHumidString);
+    displayLCD();
+
+    //publishDebug(outsideSt);
   }
 
 }
@@ -885,7 +1014,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
  Serial.println(callBackDetails);
  publishDebug("topic="+topicString);
- publishDebug("payload="+payloadString);
+ //publishDebug("payload="+payloadString);
  //publishDebug(callBackDetails);
  //
  // lcd.setCursor(0,3);
